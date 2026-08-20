@@ -1,0 +1,11 @@
+# Normalise les fins de ligne : sans ca, deux machines Windows/Mac font
+# apparaitre des fichiers "entierement modifies" a chaque commit, et les
+# diffs deviennent illisibles.
+* text=auto
+
+*.py   text eol=lf
+*.md   text eol=lf
+
+# Les fichiers de commandes Windows DOIVENT rester en CRLF, sinon cmd.exe
+# refuse de les executer correctement.
+*.bat  text eol=crlf

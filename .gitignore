@@ -1,0 +1,26 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- Sorties du jeu ---
+# Le recap est genere a chaque seance : c'est une donnee patient, pas du code.
+# Il ne doit jamais partir dans le depot.
+recap_seance_kine.json
+recap_*.json
+
+# --- Captures et fichiers de travail ---
+*.log
+shots/
+tmp/
+
+# --- Outils / systeme ---
+.claude/
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+*~
