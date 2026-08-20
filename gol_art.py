@@ -30,6 +30,8 @@ import random
 import pygame
 import pygame.gfxdraw
 
+import gol_shade
+
 # ============================================================== PALETTE =====
 VOID        = (8, 6, 11)
 NIGHT       = (17, 13, 21)
@@ -875,32 +877,60 @@ class SpriteCache:
 
 class Cerberus:
     """
-    Le gardien des Enfers - geometrie entierement originale.
+    Le gardien des Enfers.
 
-    Construction : un squelette de points nommes, des masses dessinees le
-    long de ce squelette, puis un contour unifie. Le personnage est peint
-    dans un calque a part pour pouvoir lui appliquer ce contour et un
-    eclairage global, comme on le ferait sur un sprite peint.
+    RENDU EN DEUX COUCHES
+    ---------------------
+    Cette classe ne peint pas des ombres : elle decrit un objet, et c'est
+    gol_shade qui l'eclaire.
 
-    Il regarde toujours vers la gauche (Hercule lui fait face).
+      - le CALQUE (self._layer) recoit les ALBEDOS, c'est-a-dire la couleur
+        de chaque matiere sous pleine lumiere : le poil, la corne, l'email
+        des dents. Aucun degrade, aucun lisere peint a la main.
+      - la CARTE D'EPAISSEUR (self._form) recoit, en niveaux de gris, la
+        proximite de chaque masse : 255 pour ce qui pointe vers nous, 0 pour
+        le vide. C'est elle qui produira le relief.
 
-    Parametres d'animation :
-      aggro   0..1  tetes basses, criniere herissee, gueules ouvertes
-      strain  0..1  il resiste : muscles bandes, pattes qui derapent
-      jaws    0..1  ouverture des machoires
+    Le moteur en tire des normales et allume deux sources (braseros chauds
+    en bas a gauche, portail froid en haut a droite). Les elements EMISSIFS
+    - yeux, braises, souffle - sont ajoutes apres coup : ils emettent de la
+    lumiere au lieu d'en recevoir.
+
+    Elle regarde toujours vers la gauche (Hercule lui fait face).
+
+    Animation : aggro (tetes basses, criniere), strain (muscles, derapage),
+    jaws (ouverture des machoires).
     """
 
-    # Calque ajuste au plus juste sur l'emprise reelle du personnage.
-    # Chaque pixel de marge inutile est recopie, rempli et recolle six fois
-    # a chaque recomposition : c'est le premier levier de performance.
-    #   x : museau de la tete basse (-335)  ->  dard de la queue (+360)
-    #   y : museau de la tete haute (-470)  ->  griffes (+25)
-    LW, LH = 730, 520          # dimensions du calque
-    OX, OY = 355, 490          # origine locale (sol sous le poitrail)
+    LW, LH = 730, 520
+    OX, OY = 355, 490
+
+    # --- ALBEDOS : couleur sous pleine lumiere, jamais assombrie a la main ---
+    # Volontairement sourds : la bete est une masse sombre revelee par le
+    # feu, pas un animal brun. C'est l'eclairage qui cree la lumiere.
+    FUR = (74, 57, 51)
+    FUR_FAR = (48, 38, 36)          # plans eloignes : moins de matiere vue
+    FUR_NEAR = (92, 71, 62)
+    FUR_BELLY = (60, 46, 42)
+    HORN_A = (132, 118, 104)
+    TOOTH_A = (236, 228, 206)
+    TOOTH_WORN = (198, 184, 148)
+    MAW_A = (104, 32, 36)
+    THROAT_A = (52, 14, 18)
+    GUM_A = (146, 56, 56)
+    TONGUE_A = (168, 66, 66)
+    BRONZE_A = (172, 126, 64)
+    CLAW_A = (222, 212, 190)
+    DROOL_A = (214, 222, 214)
+
+    # --- EPAISSEURS (0 = vide, 255 = au plus pres du spectateur) ---
+    Z_TAIL, Z_FAR_LEG, Z_TORSO = 96, 104, 150
+    Z_HAUNCH, Z_SHOULDER, Z_CHEST = 182, 194, 172
+    Z_NEAR_LEG, Z_COLLAR = 208, 216
+    Z_NECK_FAR, Z_NECK_MID, Z_NECK_NEAR = 128, 176, 196
+    Z_SKULL, Z_MUZZLE, Z_HORN, Z_TOOTH = 206, 226, 240, 248
 
     # --- tronc ---
-    # Le ventre est haut (garde au sol ~40 % de la hauteur au garrot) :
-    # un ventre bas transforme le molosse en hippopotame.
     BODY = [(-108, -200), (-92, -232), (-58, -246), (-6, -240), (52, -230),
             (110, -218), (158, -200), (188, -166), (192, -130), (168, -108),
             (122, -104), (56, -100), (-16, -98), (-70, -100), (-108, -120),
@@ -913,8 +943,6 @@ class Cerberus:
              (-56, -146), (-70, -100), (-104, -88)]
 
     # --- tete (museau vers -x, charniere de machoire en (32, 2)) ---
-    # Museau long et carre, arcade lourde, oreilles pointues rabattues :
-    # on cherche le molosse, pas l'ours.
     SKULL = [(38, -4), (46, -34), (30, -60), (-4, -70), (-40, -66),
              (-74, -56), (-104, -42), (-126, -26), (-116, -8), (-80, -4),
              (-38, -2), (2, -2), (26, 2)]
@@ -922,11 +950,8 @@ class Cerberus:
     JAW = [(-112, -6), (-80, 8), (-38, 18), (2, 20), (26, 16),
            (34, 30), (0, 38), (-46, 34), (-88, 22), (-112, 8)]
     JAW_TOP = [(-112, -6), (-80, 8), (-38, 18), (2, 20), (26, 16)]
-    # Oreilles PLAQUEES vers l'arriere : chez un canide, c'est le signal
-    # d'agression. Dressees, elles rendent la bete curieuse, pas menacante.
     EAR = [(24, -44), (54, -70), (88, -56), (74, -26), (38, -26)]
     BROW = [(-6, -66), (-54, -62), (-68, -42), (-14, -48)]
-    # Cornes : la grande balaie vers l'arriere, la petite la double.
     HORN_BIG = [(-8, -60), (18, -102), (58, -124), (100, -118)]
     HORN_BIG_W = [16, 10, 5, 1]
     HORN_SM = [(14, -54), (44, -80), (76, -92)]
@@ -935,7 +960,9 @@ class Cerberus:
 
     def __init__(self):
         self._layer = pygame.Surface((self.LW, self.LH), pygame.SRCALPHA).convert_alpha()
-        self._eyes = []      # positions locales des yeux, pour le halo hors calque
+        self._form = gol_shade.FormBuffer(self.LW, self.LH)
+        self._eyes = []       # (x, y, intensite) pour le halo hors silhouette
+        self._emit = []       # elements emissifs, poses apres l'eclairage
         self._cache = SpriteCache()
 
     # -------------------------------------------------------------- outils --
@@ -946,47 +973,50 @@ class Cerberus:
         return [(px + (x - px) * ca - (y - py) * sa,
                  py + (x - px) * sa + (y - py) * ca) for x, y in pts]
 
-    def _paw(self, L, x, y, s, base, rim, toes=3):
-        pad = [(x - 30 * s, y - 20 * s), (x + 20 * s, y - 24 * s),
-               (x + 30 * s, y - 4 * s), (x + 24 * s, y + 8 * s),
-               (x - 32 * s, y + 8 * s), (x - 38 * s, y - 6 * s)]
-        sculpt(L, smooth(pad, 4), base, rim=rim, rim_off=(2, -3))
-        for i in range(toes):
+    def _both(self, pts, col, z, F=None):
+        """Peint une forme dans l'albedo ET dans la carte d'epaisseur."""
+        poly(self._layer, pts, col)
+        (F or self._form).mass(pts, z)
+
+    def _paw(self, x, y, s, col, z):
+        L, F = self._layer, self._form
+        pad = smooth([(x - 30 * s, y - 20 * s), (x + 20 * s, y - 24 * s),
+                      (x + 30 * s, y - 4 * s), (x + 24 * s, y + 8 * s),
+                      (x - 32 * s, y + 8 * s), (x - 38 * s, y - 6 * s)], 4)
+        self._both(pad, col, z)
+        for i in range(3):
             tx = x + (-22 + i * 20) * s
-            pygame.draw.circle(L, shade(base, 1.22), (int(tx), int(y + 2 * s)),
-                               max(2, int(9 * s)))
-            # griffe courte et recourbee (une griffe longue fait defense)
+            F.blob(tx, y, 12 * s, 11 * s, z + 20)
             poly(L, smooth([(tx - 5 * s, y + 7 * s), (tx + 4 * s, y + 7 * s),
                             (tx - 2 * s, y + 15 * s), (tx - 8 * s, y + 12 * s)], 3),
-                 CLAW)
+                 self.CLAW_A)
+            F.blob(tx - 3 * s, y + 11 * s, 7 * s, 6 * s, self.Z_TOOTH)
 
-    def _limb(self, L, joints, widths, s, base, rim, dx=0.0):
+    def _limb(self, joints, widths, col, z, dx=0.0):
         j = [(a + dx, b) for a, b in joints]
-        pts = tform(tapered(j, widths), self.OX, self.OY, 0.0, s)
-        sculpt(L, pts, base, rim=rim, under=shade(base, 1.45),
-               rim_off=(3, -3), under_off=(-3, 3))
-        return tform([j[-1]], self.OX, self.OY, 0.0, s)[0]
+        pts = tform(tapered(j, widths), self.OX, self.OY, 0.0, 1.0)
+        self._both(pts, col, z)
+        return tform([j[-1]], self.OX, self.OY, 0.0, 1.0)[0]
 
     # ---------------------------------------------------------------- tete --
-    def head(self, L, x, y, ang, s, jaw, tone, rim, eye=1.0, detail=1.0):
+    def head(self, x, y, ang, s, jaw, col, z, eye=1.0, detail=1.0):
+        L, F = self._layer, self._form
+
         def T(pts):
             return tform(pts, x, y, ang, s)
 
         # Angle NEGATIF : la charniere est a l'arriere (32, 2) et le museau
-        # part vers -x, donc une rotation positive remonte la machoire dans
-        # le crane au lieu de l'ouvrir.
+        # part vers -x, donc une rotation positive remonterait la machoire
+        # dans le crane au lieu de l'ouvrir.
         jang = -jaw * 0.62
         jaw_r = self._rot(self.JAW, jang, self.HINGE)
         jaw_top_r = self._rot(self.JAW_TOP, jang, self.HINGE)
 
-        # CORNES d'abord : elles passent derriere le crane, donc sous tout
-        # le reste. Deux par tete, la petite doublant la grande.
+        # --- cornes (derriere le crane) ---
         for joints, widths, k in ((self.HORN_BIG, self.HORN_BIG_W, 1.0),
-                                  (self.HORN_SM, self.HORN_SM_W, 0.9)):
+                                  (self.HORN_SM, self.HORN_SM_W, 0.86)):
             hp = T(tapered(joints, widths))
-            sculpt(L, hp, shade(HORN, k), rim=HORN_LIT, rim_off=(2, -3),
-                   under=shade(HORN, 0.55), under_off=(-2, 2))
-            # cannelures : ce qui fait lire "corne" plutot que "pique"
+            self._both(hp, shade(self.HORN_A, k), self.Z_HORN)
             if detail > 0.5:
                 for i in range(3):
                     u = 0.25 + i * 0.22
@@ -997,139 +1027,98 @@ class Cerberus:
                     cyh = lerp(joints[i0][1], joints[i0 + 1][1], f)
                     ww = lerp(widths[i0], widths[i0 + 1], f)
                     seg = T([(cxh, cyh - ww), (cxh, cyh + ww)])
-                    pygame.draw.line(L, shade(HORN, 0.5),
-                                     (int(seg[0][0]), int(seg[0][1])),
-                                     (int(seg[1][0]), int(seg[1][1])), 2)
+                    F.groove(seg[0], seg[1], 3, self.Z_HORN - 40)
 
-        # oreilles plaquees (peu de lissage : elles doivent rester
-        # anguleuses, un lissage fort les arrondit en oreilles d'ourson)
+        # --- oreilles plaquees ---
         for k, off in ((0.82, (14, 4)), (1.0, (0, 0))):
             ear = [(px * k + off[0], py * k + off[1]) for px, py in self.EAR]
-            # oreilles volontairement sombres : ce sont les CORNES qui
-            # doivent capter le regard, pas elles
-            sculpt(L, T(smooth(ear, 2)), shade(tone, 0.42 if k < 0.9 else 0.58),
-                   rim=rim_dim(rim), rim_off=(2, -2))
-            # conque : retrecie autour du barycentre pour rester DANS l'oreille
+            self._both(T(smooth(ear, 2)), shade(col, 0.72 if k < 0.9 else 0.86),
+                       self.Z_SKULL - (30 if k < 0.9 else 12))
             cx = sum(p[0] for p in ear) / len(ear)
             cy = sum(p[1] for p in ear) / len(ear)
             inner = [(cx + (px - cx) * 0.5, cy + (py - cy) * 0.5) for px, py in ear]
-            poly(L, T(smooth(inner, 3)), shade(MAW, 0.38))
+            self._both(T(smooth(inner, 3)), shade(self.MAW_A, 0.5),
+                       self.Z_SKULL - 60)
 
-        # interieur de la gueule
+        # --- gueule ---
         if jaw > 0.05:
-            maw = self.LIP_UP + jaw_top_r[::-1]
-            poly(L, T(maw), MAW)
-            # gorge : le fond doit etre le point le plus sombre de la tete,
-            # sinon la gueule ouverte se lit comme un aplat rouge plat
-            soft_blob(L, *T([(4, 6)])[0], 30 * s, 20 * s, (16, 4, 6), 220, ang)
-            # langue COUCHEE dans la machoire basse, suivant sa rotation
+            self._both(T(self.LIP_UP + jaw_top_r[::-1]), self.MAW_A, 60)
+            gx, gy = T([(4, 6)])[0]
+            poly(L, T([(-30, -2), (26, 2), (26, 12), (-30, 8)]), self.THROAT_A)
+            F.blob(gx, gy, 34 * s, 24 * s, 40)
             t_up = self._rot([(-86, 0), (-50, 11), (-12, 17), (16, 15)],
                              jang, self.HINGE)
             t_lo = self._rot([(16, 20), (-12, 23), (-50, 17), (-86, 5)],
                              jang, self.HINGE)
-            poly(L, T(smooth(t_up + t_lo, 3)), shade(BLOOD, 0.5))
-            poly(L, T(smooth(self._rot(
-                [(-70, 4), (-30, 13), (0, 17), (0, 19), (-30, 16), (-70, 7)],
-                jang, self.HINGE), 3)), shade(BLOOD, 0.72))
-            # gencives : sans elles, les crocs ont l'air poses sur du vide
+            self._both(T(smooth(t_up + t_lo, 3)), self.TONGUE_A, 120)
             poly(L, T([(-114, -8), (-30, -4), (26, 0), (26, 8),
-                       (-30, 6), (-114, 2)]), GUM)
+                       (-30, 6), (-114, 2)]), self.GUM_A)
 
-        # machoire inferieure + crocs du bas
-        sculpt(L, T(smooth(jaw_r, 3)), shade(tone, 0.88), rim=rim, rim_off=(2, -2))
+        # --- machoire inferieure ---
+        self._both(T(smooth(jaw_r, 3)), shade(col, 0.94), self.Z_SKULL - 8)
         if jaw > 0.05:
             poly(L, T(self._rot([(-108, -2), (-30, 10), (24, 14), (24, 22),
-                                 (-30, 18), (-108, 6)], jang, self.HINGE)), GUM)
-        # Crocs du bas seulement gueule entrouverte : machoire fermee, ils
-        # depassaient sous la levre comme les defenses d'un sanglier.
+                                 (-30, 18), (-108, 6)], jang, self.HINGE)),
+                 self.GUM_A)
         if jaw > 0.12:
             for bx, by, sz in ((-98, 5, 14), (-72, 10, 8), (-48, 14, 7),
                                (-24, 17, 10), (-4, 18, 6)):
                 fx, fy = self._rot([(bx, by)], jang, self.HINGE)[0]
-                poly(L, T([(fx - sz * 0.42, fy + 3), (fx + sz * 0.42, fy + 3),
-                           (fx - sz * 0.1, fy - sz)]), TOOTH_OLD)
-                poly(L, T([(fx - sz * 0.42, fy + 3), (fx - sz * 0.06, fy + 3),
-                           (fx - sz * 0.1, fy - sz)]), TOOTH)
+                tri = T([(fx - sz * 0.42, fy + 3), (fx + sz * 0.42, fy + 3),
+                         (fx - sz * 0.1, fy - sz)])
+                self._both(tri, self.TOOTH_WORN, self.Z_TOOTH)
 
-        # crane
-        sculpt(L, T(smooth(self.SKULL, 4)), tone, rim=rim,
-               under=shade(tone, 1.5), rim_off=(2, -3), under_off=(-3, 3))
-        # chanfrein eclaire (le dessus du museau capte la lumiere)
-        soft_blob(L, *T([(-74, -44)])[0], 44 * s, 11 * s, shade(tone, 1.55), 78, ang)
-        # arcade sourciliere lourde
-        poly(L, T(self.BROW), shade(tone, 1.28))
-        poly(L, T([(-6, -66), (-54, -62), (-56, -54), (-10, -58)]),
-             shade(tone, 0.62))
-        # Creux temporal + pommette. En taches douces, pas en polygones :
-        # une arete franche a cet endroit se lit comme une plaque ou une
-        # cicatrice, pas comme un relief osseux.
-        soft_blob(L, *T([(-4, -38)])[0], 21 * s, 15 * s, shade(tone, 0.5), 140, ang)
-        soft_blob(L, *T([(14, -28)])[0], 18 * s, 12 * s, shade(tone, 1.3), 120, ang)
-        # crocs superieurs : deux canines dominantes + molaires,
-        # jamais une rangee reguliere (ca fait peigne)
+        # --- crane ---
+        self._both(T(smooth(self.SKULL, 4)), col, self.Z_SKULL)
+        # relief interne : le museau et l'arcade avancent, la joue recule
+        mx, my = T([(-72, -34)])[0]
+        F.blob(mx, my, 50 * s, 19 * s, self.Z_MUZZLE)
+        bx2, by2 = T([(-30, -54)])[0]
+        F.blob(bx2, by2, 36 * s, 15 * s, self.Z_MUZZLE - 6)
+        cx2, cy2 = T([(6, -32)])[0]
+        F.blob(cx2, cy2, 33 * s, 25 * s, self.Z_SKULL + 16)
+
+        poly(L, T(self.BROW), shade(col, 1.08))
         for bx, sz in ((-106, 18), (-80, 10), (-58, 8), (-36, 12), (-16, 7)):
             sz *= (0.55 + 0.45 * jaw)
-            poly(L, T([(bx - sz * 0.42, -6), (bx + sz * 0.42, -6),
-                       (bx - sz * 0.12, sz)]), TOOTH_OLD)
+            tri = T([(bx - sz * 0.42, -6), (bx + sz * 0.42, -6),
+                     (bx - sz * 0.12, sz)])
+            self._both(tri, self.TOOTH_WORN, self.Z_TOOTH)
             poly(L, T([(bx - sz * 0.42, -6), (bx - sz * 0.06, -6),
-                       (bx - sz * 0.12, sz)]), TOOTH)
-        # truffe, plus ramassee, avec sa narine
-        poly(L, T(smooth([(-128, -28), (-117, -40), (-104, -30), (-116, -21)], 3)),
-             shade(tone, 0.36))
-        poly(L, T([(-124, -30), (-116, -33), (-113, -27), (-121, -25)]),
-             shade(tone, 0.18))
-        # plis du grognement
-        if detail > 0.5:
-            for i in range(3):
-                pts = T([(-90 + i * 15, -46 - i * 3), (-72 + i * 15, -54 - i * 3),
-                         (-52 + i * 15, -52 - i * 3)])
-                pygame.draw.aalines(L, shade(tone, 1.5), False,
-                                    [(int(a), int(b)) for a, b in pts])
+                       (bx - sz * 0.12, sz)]), self.TOOTH_A)
 
-        # OEIL : une braise au fond d'une orbite creuse.
-        # L'orbite sombre est ce qui rend le regard inquietant - un oeil
-        # pose a plat sur le museau ressemble a un bouton lumineux.
+        # truffe
+        self._both(T(smooth([(-128, -28), (-117, -40), (-104, -30),
+                             (-116, -21)], 3)), shade(col, 0.42),
+                   self.Z_MUZZLE + 8)
+        poly(L, T([(-124, -30), (-116, -33), (-113, -27), (-121, -25)]),
+             shade(col, 0.22))
+
+        # --- oeil : emissif, donc pose apres l'eclairage ---
         ex, ey = T([(-46, -46)])[0]
         self._eyes.append((ex, ey, eye))
-        soft_blob(L, ex, ey, 19 * s, 15 * s, shade(tone, 0.24), 225)
-        poly(L, T([(-64, -52), (-40, -58), (-26, -48), (-40, -36), (-62, -38)]),
-             shade(tone, 0.34))
-
-        er = max(2.0, 5.5 * s)
-        glow(L, ex, ey, er * 6 * eye, EYE_HOT, int(210 * eye))
-        # Iris en amande, incline. Volontairement petit : un gros oeil rond
-        # rend la bete expressive et sympathique, un oeil etroit la rend
-        # froide. La paupiere lourde par-dessus finit de durcir le regard.
-        almond = [(-10, 1), (-4, -5), (4, -6), (10, -1), (3, 5), (-5, 5)]
-        poly(L, T([(-46 + a, -46 + b) for a, b in almond]), EYE_HOT)
-        poly(L, T([(-46 - 1.5, -46 - 5), (-46 + 1.5, -46 - 5), (-46 + 2, -46),
-                   (-46 + 1.5, -46 + 4), (-46 - 1.5, -46 + 4), (-46 - 2, -46)]),
-             (22, 6, 8))
-        pygame.draw.circle(L, EYE_CORE, (int(ex - er * 0.5), int(ey - er * 0.5)),
-                           max(1, int(er * 0.28)))
-        # paupiere superieure lourde, qui mord sur l'iris
+        F.blob(ex, ey, 14 * s, 11 * s, self.Z_SKULL - 40)
+        self._emit.append(("eye", ex, ey, ang, s, eye,
+                           T([(-46 + a, -46 + b) for a, b in
+                              ((-10, 1), (-4, -5), (4, -6), (10, -1),
+                               (3, 5), (-5, 5))]),
+                           T([(-47.5, -51), (-44.5, -51), (-44, -46),
+                              (-44.5, -42), (-47.5, -42), (-48, -46)])))
         poly(L, T([(-58, -54), (-46, -52), (-34, -50), (-34, -46),
-                   (-46, -48), (-58, -49)]), shade(tone, 0.55))
-        # lisere froid sur la ligne de crete du crane
-        top = T([(34, -48), (28, -62), (-6, -72), (-44, -68), (-78, -58),
-                 (-108, -44), (-128, -26)])
-        pygame.draw.lines(L, rim, False, [(int(a), int(b)) for a, b in top],
-                          max(1, int(2 * s)))
+                   (-46, -48), (-58, -49)]), shade(col, 0.68))
 
-        # BAVE : filets qui pendent de la machoire ouverte. Detail bon marche
-        # (quelques lignes) au rendement tres eleve sur l'impression de danger.
+        # --- bave ---
         if jaw > 0.35 and detail > 0.5:
-            # accrochee sur le BORD SUPERIEUR de la machoire basse : c'est
-            # la que la salive s'accumule quand la gueule s'ouvre
             for bx, by, ln in ((-80, 8, 30), (-38, 18, 48), (2, 20, 24)):
                 fx, fy = self._rot([(bx, by)], jang, self.HINGE)[0]
                 sway = math.sin(bx * 0.7) * 5
                 pts = T([(fx, fy), (fx + sway * 0.4, fy + ln * 0.55),
                          (fx + sway, fy + ln)])
-                pygame.draw.lines(L, DROOL, False,
+                pygame.draw.lines(L, self.DROOL_A, False,
                                   [(int(a), int(b)) for a, b in pts],
                                   max(1, int(2 * s)))
-                pygame.draw.circle(L, DROOL, (int(pts[2][0]), int(pts[2][1])),
+                pygame.draw.circle(L, self.DROOL_A,
+                                   (int(pts[2][0]), int(pts[2][1])),
                                    max(1, int(3 * s)))
 
     # -------------------------------------------------------------- dessin --
@@ -1143,44 +1132,35 @@ class Cerberus:
         soft_blob(surf, x + 24 * s, y + 6 * s, 230 * s, 34 * s, INK, 170)
         spr, m = self._cache.spr, self._cache.margin
         surf.blit(spr, (int(x - self.OX * s - m), int(y - self.OY * s - m)))
-        # les yeux debordent dans la scene : halo peint hors du sprite
         for ex, ey, k in self._eyes:
             glow(surf, x + (ex - self.OX) * s, y + (ey - self.OY) * s,
                  46 * s * k, EYE_HOT, int(120 * k))
 
     def _bake(self, t, s, aggro, strain, jaws):
         L = self._layer
+        F = self._form
         L.fill((0, 0, 0, 0))
+        F.clear()
         OX, OY = self.OX, self.OY
-        rnd = random.Random(1789)
         self._eyes = []
+        self._emit = []
 
         breath = math.sin(t * 2.1) * 4.0
-        far = shade(BEAST_DARK, 1.15)
-        mid = BEAST
-        near = BEAST_MID
-        rim = RIM_COLD
-        rim_far = RIM_SOFT
         slip = strain * 18
 
         def T(pts, off=(0, 0)):
-            return tform([(a + off[0], b + off[1]) for a, b in pts], OX, OY, 0.0, 1.0)
+            return tform([(a + off[0], b + off[1]) for a, b in pts],
+                         OX, OY, 0.0, 1.0)
 
-        # ---- QUEUE DE DEMON (plan le plus lointain) ----
-        # Fouet epais a la base, effile jusqu'a une pointe en fer de lance,
-        # herisse d'ergots osseux sur l'arete exterieure.
+        # ================================ QUEUE DE DEMON (plan le + lointain)
         wig = math.sin(t * 1.9)
-        # Hauteur calee pour que le dard reste sous le bandeau d'interface :
-        # plus haut, il passait derriere le score.
         tail_j = [(168, -186), (238, -208), (296, -240), (330, -292), (322, -342)]
         tail_j = [(a + i * wig * 6, b + math.sin(t * 2.3 + i * 0.8) * 7)
                   for i, (a, b) in enumerate(tail_j)]
         tail_w = [34, 23, 14, 8, 4]
-        sculpt(L, T(tapered(tail_j, tail_w)), shade(mid, 0.82),
-               rim=rim_far, rim_off=(3, -3))
+        self._both(T(tapered(tail_j, tail_w)), self.FUR_FAR, self.Z_TAIL)
 
         def _on_tail(u):
-            """Point, direction et demi-largeur a l'abscisse u (0 -> 1)."""
             k = u * (len(tail_j) - 1)
             i0 = min(len(tail_j) - 2, int(k))
             f = k - i0
@@ -1190,12 +1170,9 @@ class Cerberus:
                              tail_j[i0 + 1][0] - tail_j[i0][0])
             return px, py, ang, lerp(tail_w[i0], tail_w[i0 + 1], f)
 
-        # Ergots, toujours sur l'EXTERIEUR de la courbe. Une perpendiculaire
-        # brute alterne de cote quand la queue s'enroule et produit une
-        # fermeture eclair ; on choisit donc la normale qui s'ecarte du
-        # centre de courbure.
-        # Quatre ergots seulement, cantonnes a la moitie basse : herisses sur
-        # toute la longueur, ils faisaient queue de lezard au lieu de fouet.
+        # Ergots sur l'EXTERIEUR de la courbe : une perpendiculaire brute
+        # alterne de cote quand la queue s'enroule et fait une fermeture
+        # eclair. On prend la normale qui s'ecarte du centre de courbure.
         curve_cx, curve_cy = 202, -258
         for i in range(4):
             px, py, ang, wdt = _on_tail(0.12 + i * 0.13)
@@ -1204,222 +1181,197 @@ class Cerberus:
                 nx, ny = -nx, -ny
             ln = 26 - i * 3.0
             base = 0.85 * wdt
-            spur = [(px + nx * wdt * 0.5 - math.cos(ang) * base,
-                     py + ny * wdt * 0.5 - math.sin(ang) * base),
-                    (px + nx * (wdt + ln) - math.cos(ang) * ln * 0.7,
-                     py + ny * (wdt + ln) - math.sin(ang) * ln * 0.7),
-                    (px + nx * wdt * 0.5 + math.cos(ang) * base * 0.5,
-                     py + ny * wdt * 0.5 + math.sin(ang) * base * 0.5)]
-            sculpt(L, T(spur), HORN, rim=HORN_LIT, rim_off=(2, -2))
+            self._both(T([(px + nx * wdt * 0.5 - math.cos(ang) * base,
+                           py + ny * wdt * 0.5 - math.sin(ang) * base),
+                          (px + nx * (wdt + ln) - math.cos(ang) * ln * 0.7,
+                           py + ny * (wdt + ln) - math.sin(ang) * ln * 0.7),
+                          (px + nx * wdt * 0.5 + math.cos(ang) * base * 0.5,
+                           py + ny * wdt * 0.5 + math.sin(ang) * base * 0.5)]),
+                       self.HORN_A, self.Z_TAIL + 40)
 
-        # Dard terminal en fer de lance, aligne sur la queue. Pas de lissage :
-        # une pointe arrondie perd tout son tranchant.
+        # Dard terminal en fer de lance : c'est lui, et lui seul, qui fait
+        # lire "queue de demon" plutot que "queue d'animal".
         px, py, ang, _ = _on_tail(1.0)
         ca, sa = math.cos(ang), math.sin(ang)
 
         def _at(a, b):
             return (px + a * ca - b * sa, py + a * sa + b * ca)
 
-        # Le dard doit DOMINER : c'est lui, et lui seul, qui fait lire
-        # "queue de demon" plutot que "queue d'animal".
-        glow(L, OX + px + 40 * ca, OY + py + 40 * sa, 54, FIRE_LOW, 130)
         barb = [_at(4, -6), _at(15, -29), _at(42, -23),
                 _at(74, 0), _at(42, 23), _at(15, 29), _at(4, 6)]
-        sculpt(L, T(barb), shade(HORN, 1.45), rim=HORN_LIT, rim_off=(3, -4),
-               under=shade(HORN, 0.45), under_off=(-3, 3))
-        # nervure centrale
-        poly(L, T([_at(9, -7), _at(54, 0), _at(9, 7)]), shade(HORN, 0.55))
-        pygame.draw.line(L, HORN_LIT,
-                         (int(OX + _at(10, 0)[0]), int(OY + _at(10, 0)[1])),
-                         (int(OX + _at(68, 0)[0]), int(OY + _at(68, 0)[1])), 2)
+        self._both(T(barb), self.HORN_A, self.Z_TAIL + 55)
+        bx3, by3 = T([_at(32, 0)])[0]
+        F.blob(bx3, by3, 28, 17, self.Z_TAIL + 85)
+        self._emit.append(("glow", bx3, by3, 30, FIRE_LOW, 90))
 
-        # ---- pattes du fond (anterieur droit / posterieur en Z) ----
-        p = self._limb(L, [(-64, -206), (-88, -140), (-104, -70), (-116, -16)],
-                       [30, 20, 14, 12], 1.0, far, rim_far, dx=-slip * 0.5)
-        self._paw(L, p[0], p[1], 0.86, far, rim_far)
-        p = self._limb(L, [(118, -198), (162, -136), (126, -72), (152, -16)],
-                       [34, 23, 15, 13], 1.0, far, rim_far)
-        self._paw(L, p[0], p[1], 0.88, far, rim_far)
+        # ============================================ PATTES DU PLAN LOINTAIN
+        p = self._limb([(-64, -206), (-88, -140), (-104, -70), (-116, -16)],
+                       [30, 20, 14, 12], self.FUR_FAR, self.Z_FAR_LEG,
+                       dx=-slip * 0.5)
+        self._paw(p[0], p[1], 0.86, self.FUR_FAR, self.Z_FAR_LEG)
+        p = self._limb([(118, -198), (162, -136), (126, -72), (152, -16)],
+                       [34, 23, 15, 13], self.FUR_FAR, self.Z_FAR_LEG)
+        self._paw(p[0], p[1], 0.88, self.FUR_FAR, self.Z_FAR_LEG)
 
-        # ---- tronc ----
-        # Le rebond chaud reste discret : trop marque, il se lit comme un
-        # bandeau orange colle sous le ventre au lieu d'une lumiere reflechie.
-        bounce = shade(BEAST_WARM, 0.62)
+        # ============================================================= TRONC
         body = [(a, b + breath * 0.4) for a, b in self.BODY]
-        sculpt(L, T(smooth(body, 5)), mid, rim=rim, under=bounce,
-               rim_off=(3, -4), under_off=(-3, 4))
-        sculpt(L, T(smooth(self.HAUNCH, 5)), shade(mid, 1.10), rim=rim,
-               under=shade(bounce, 0.85), rim_off=(3, -4), under_off=(-2, 3))
-        sculpt(L, T(smooth(self.SHOULDER, 5)), shade(mid, 1.18), rim=rim,
-               under=bounce, rim_off=(3, -4), under_off=(-2, 3))
-        sculpt(L, T(smooth(self.CHEST, 5)), shade(mid, 1.04), under=bounce,
-               under_off=(-2, 3))
+        self._both(T(smooth(body, 5)), self.FUR, self.Z_TORSO)
+        self._both(T(smooth(self.HAUNCH, 5)), self.FUR, self.Z_HAUNCH)
+        self._both(T(smooth(self.SHOULDER, 5)), self.FUR, self.Z_SHOULDER)
+        self._both(T(smooth(self.CHEST, 5)), self.FUR, self.Z_CHEST)
 
-        # ---- volumes musculaires ----
-        for lx, ly, rx, ry, k, a in ((-92, -160, 34, 44, 1.55, 110),
-                                     (156, -150, 38, 46, 1.5, 110),
-                                     (24, -206, 68, 20, 1.35, 100),
-                                     (10, -84, 74, 18, 0.68, 130),
-                                     (-84, -104, 30, 26, 0.72, 110)):
-            soft_blob(L, OX + lx, OY + ly, rx, ry, shade(mid, k), a)
+        # Bombements : sans eux la carte d'epaisseur n'est qu'un plateau
+        # et le corps s'eclaire comme une decoupe de carton.
+        for bx, by, rx, ry, z in ((30, -168, 152, 66, self.Z_TORSO + 40),
+                                  (-88, -166, 58, 64, self.Z_SHOULDER + 34),
+                                  (154, -152, 62, 66, self.Z_HAUNCH + 34),
+                                  (-104, -148, 38, 52, self.Z_CHEST + 26),
+                                  (18, -222, 116, 26, self.Z_TORSO + 22)):
+            F.blob(OX + bx, OY + by, rx, ry, z)
+        # cotes saillantes quand la bete force
         if strain > 0.15:
             for i in range(4):
-                soft_blob(L, OX - 4 + i * 28, OY - 130, 8, 36,
-                          shade(mid, 0.6), int(130 * strain))
+                F.groove((OX - 6 + i * 28, OY - 168), (OX - 14 + i * 28, OY - 112),
+                         7, int(self.Z_TORSO + 26 * strain))
 
-        # ---- texture de fourrure (graine fixe : stable dans le temps) ----
-        # echantillonnage dans une ellipse qui epouse le tronc, sinon les
-        # poils debordent sur le vide autour de la silhouette
-        ecx, ecy, erx, ery = 34, -168, 172, 74
-        for _ in range(220):
-            u, v = rnd.uniform(-1, 1), rnd.uniform(-1, 1)
-            if u * u + v * v > 1.0:
-                continue
-            fx, fy = ecx + u * erx, ecy + v * ery
-            ln = rnd.uniform(8, 22)
-            # les poils suivent la retombee du flanc : plus obliques en bas
-            ang = -0.45 + v * 0.55 + rnd.uniform(-0.18, 0.18)
-            c = shade(mid, 1.45 if rnd.random() < 0.4 else 0.66)
-            pygame.draw.line(L, c, (int(OX + fx), int(OY + fy)),
-                             (int(OX + fx + math.cos(ang) * ln),
-                              int(OY + fy + math.sin(ang) * ln)), 2)
-
-        # ---- veines de braise sous le pelage ----
-        # Signature du personnage : la creature n'est pas seulement sombre,
-        # elle couve. Les veines pulsent avec l'agressivite.
+        # ================================================ VEINES DE BRAISE
         pulse = 0.45 + 0.55 * (0.5 + 0.5 * math.sin(t * 2.6)) * (0.4 + 0.6 * aggro)
-        veins = [[(-96, -206), (-64, -190), (-30, -184), (6, -190)],
-                 [(-70, -160), (-34, -150), (4, -152)],
-                 [(60, -206), (96, -196), (130, -186)],
-                 [(96, -140), (132, -132), (162, -138)]]
-        for vpath in veins:
+        for vpath in ([(-96, -206), (-64, -190), (-30, -184), (6, -190)],
+                      [(-70, -160), (-34, -150), (4, -152)],
+                      [(60, -206), (96, -196), (130, -186)],
+                      [(96, -140), (132, -132), (162, -138)]):
             pts = [(int(OX + a), int(OY + b)) for a, b in smooth(vpath, 5, False)]
-            # la braise couve SOUS le poil : elle reste sourde, seul un
-            # coeur tres fin est franchement chaud
-            pygame.draw.lines(L, mix(BEAST, FIRE_LOW, 0.42 * pulse), False, pts, 4)
-            pygame.draw.lines(L, mix(BEAST, FIRE_LOW, 0.85 * pulse), False, pts, 2)
-            for px, py in pts[::7]:
-                glow(L, px, py, 13, FIRE_LOW, int(60 * pulse))
+            for a, b in pts[::3]:
+                F.groove((a, b), (a + 2, b), 4, 40)     # fissure : creux
+            self._emit.append(("vein", pts, pulse))
 
-        # ---- franges de poil sous le ventre et derriere les membres ----
-        # Une ligne de ventre nette donne une masse lisse et inerte ; des
-        # meches qui pendent cassent la silhouette et la rendent vivante.
-        # Meches POINTUES et chevauchantes : lissees et espacees, elles se
-        # lisent comme une rangee de bosses accrochees sous le ventre.
+        # ============================================== FRANGES SOUS LE VENTRE
         fringe = random.Random(90210)
         for i in range(16):
             bx = -104 + i * 17
             by = -104 - abs(bx - 20) * 0.06
             ln = fringe.uniform(13, 31)
             lean_x = fringe.uniform(-11, 2)
-            poly(L, T([(bx - 12, by - 8), (bx + 12, by - 8),
-                       (bx + lean_x, by + ln)]), shade(mid, 0.58))
-        # ombre profonde sous la cage thoracique
-        soft_blob(L, OX + 20, OY - 96, 165, 26, INK, 130)
+            self._both(T([(bx - 12, by - 8), (bx + 12, by - 8),
+                          (bx + lean_x, by + ln)]), self.FUR_BELLY,
+                       self.Z_TORSO - 30)
 
-        # ---- cicatrices : la bete a deja combattu ----
+        # ========================================================= CICATRICES
         for sx, sy, ln, n in ((-30, -196, 44, 3), (118, -166, 34, 3)):
             for i in range(n):
                 off = i * 11
-                p0 = (OX + sx + off, OY + sy)
-                p1 = (OX + sx + off - 9, OY + sy + ln)
-                pygame.draw.line(L, shade(mid, 0.5), (int(p0[0] + 2), int(p0[1])),
-                                 (int(p1[0] + 2), int(p1[1])), 4)
-                pygame.draw.line(L, shade(mid, 1.7), (int(p0[0]), int(p0[1])),
-                                 (int(p1[0]), int(p1[1])), 2)
+                F.groove((OX + sx + off, OY + sy),
+                         (OX + sx + off - 9, OY + sy + ln), 6, self.Z_TORSO + 70)
 
-        # ---- ergots osseux sortant des epaules ----
-        # Rien sur la croupe : ils y entraient en collision avec la crete
-        # dorsale et le dos redevenait une lame de scie.
+        # =================================================== ERGOTS D'EPAULES
         for bx, by, ang2, ln in ((-108, -214, -2.5, 32), (-80, -228, -2.1, 24)):
             ca2, sa2 = math.cos(ang2), math.sin(ang2)
-            spur = [(bx - sa2 * 9, by + ca2 * 9),
-                    (bx + ca2 * ln, by + sa2 * ln),
-                    (bx + sa2 * 9, by - ca2 * 9)]
-            sculpt(L, T(spur), HORN, rim=HORN_LIT, rim_off=(2, -2))
+            self._both(T([(bx - sa2 * 9, by + ca2 * 9),
+                          (bx + ca2 * ln, by + sa2 * ln),
+                          (bx + sa2 * 9, by - ca2 * 9)]),
+                       self.HORN_A, self.Z_HORN)
 
-        # ---- crete de poils herisses le long de l'echine ----
-        # Un seul contour ondule irregulier, pas une file de triangles :
-        # des pics reguliers donnent immanquablement un dos de stegosaure.
+        # ====================================================== CRETE DORSALE
         spine = [(-74, -248), (-52, -250), (-30, -246), (-6, -242), (18, -238),
                  (44, -234), (72, -228), (100, -220), (128, -212), (152, -202)]
         crest = random.Random(4242)
         top = []
-        for i, (px, py) in enumerate(spine):
+        for i, (px2, py2) in enumerate(spine):
             fade = (1.0 - i / (len(spine) - 1.0)) ** 0.9
             hgt = (8 + 26 * fade) * (0.55 + 0.65 * aggro) * crest.uniform(0.6, 1.35)
-            top.append((px - hgt * 0.22, py - hgt))
-        ridge = smooth(top + spine[::-1], 4)
-        poly(L, T(ridge), shade(mid, 0.72))
-        pygame.draw.lines(L, rim_far, False,
-                          [(int(a), int(b)) for a, b in T(smooth(top, 4))], 2)
+            top.append((px2 - hgt * 0.22, py2 - hgt))
+        self._both(T(smooth(top + spine[::-1], 4)), shade(self.FUR, 0.82),
+                   self.Z_TORSO + 12)
 
-        # ---- pattes du premier plan ----
-        p = self._limb(L, [(152, -206), (200, -140), (158, -72), (190, -12)],
-                       [38, 26, 17, 15], 1.0, near, rim)
-        self._paw(L, p[0], p[1], 1.0, near, rim)
-        p = self._limb(L, [(-98, -218), (-130, -150), (-152, -78), (-168, -12)],
-                       [36, 24, 16, 14], 1.0, near, rim, dx=-slip)
-        self._paw(L, p[0], p[1], 0.96, near, rim)
+        # =========================================== PATTES DU PREMIER PLAN
+        p = self._limb([(152, -206), (200, -140), (158, -72), (190, -12)],
+                       [38, 26, 17, 15], self.FUR_NEAR, self.Z_NEAR_LEG)
+        self._paw(p[0], p[1], 1.0, self.FUR_NEAR, self.Z_NEAR_LEG)
+        p = self._limb([(-98, -218), (-130, -150), (-152, -78), (-168, -12)],
+                       [36, 24, 16, 14], self.FUR_NEAR, self.Z_NEAR_LEG,
+                       dx=-slip)
+        self._paw(p[0], p[1], 0.96, self.FUR_NEAR, self.Z_NEAR_LEG)
         if strain > 0.25:
             for i in range(3):
                 sx = p[0] + 34 + i * 26
-                pygame.draw.line(L, shade(STONE_DARK, 1.6),
+                pygame.draw.line(L, shade(self.FUR, 0.5),
                                  (int(sx), int(p[1] + 8)),
                                  (int(sx + 42), int(p[1] + 11)), 3)
 
-        # ---- collier de fer ----
-        col = T([(-118, -196), (-72, -222), (-44, -206), (-92, -178)])
-        sculpt(L, col, shade(BRONZE, 0.45), rim=BRONZE, rim_off=(2, -3))
+        # ================================================== COLLIER DE FER
+        self._both(T([(-118, -196), (-72, -222), (-44, -206), (-92, -178)]),
+                   shade(self.BRONZE_A, 0.62), self.Z_COLLAR)
         for i in range(3):
-            cx2, cy2 = OX - 106 + i * 26, OY - 196 - i * 9
-            poly(L, [(cx2, cy2 - 10), (cx2 + 8, cy2), (cx2, cy2 + 10),
-                     (cx2 - 8, cy2)], BRONZE)
+            cx3, cy3 = OX - 106 + i * 26, OY - 196 - i * 9
+            self._both([(cx3, cy3 - 10), (cx3 + 8, cy3), (cx3, cy3 + 10),
+                        (cx3 - 8, cy3)], self.BRONZE_A, self.Z_COLLAR + 20)
 
-        # ---- COUS + TETES : du plan lointain au plan proche ----
-        # Convention d'angle : POSITIF = museau vers le haut (le museau est
-        # sur -x, donc y' = x*sin(a) devient negatif quand a est positif).
+        # ==================================================== COUS ET TETES
+        # POSITIF = museau vers le haut (le museau est sur -x, donc
+        # y' = x*sin(a) devient negatif quand a est positif).
         hs = 0.92
         heads = [
-            # cou, largeurs, angle tete, teinte, mult. ouverture, plan
-            # 1) tete du fond, dressee, hurlant vers le ciel
             ([(-62, -234), (-48, -304), (-14, -356)], [40, 30, 22],
-             0.98 + math.sin(t * 2.0 + 1.9) * 0.05, shade(far, 1.35), 0.6, 0.5),
-            # 2) tete centrale, la plus haute et la plus large
+             0.98 + math.sin(t * 2.0 + 1.9) * 0.05, self.FUR_FAR,
+             self.Z_NECK_FAR, 0.6, 0.5),
             ([(-94, -230), (-142, -286), (-186, -306)], [48, 38, 28],
-             0.30 + math.sin(t * 2.4) * 0.05 + aggro * 0.10, mid, 1.0, 1.0),
-            # 3) tete proche, basse, projetee en avant : celle qui mord
+             0.30 + math.sin(t * 2.4) * 0.05 + aggro * 0.10, self.FUR,
+             self.Z_NECK_MID, 1.0, 1.0),
             ([(-106, -214), (-160, -234), (-216, -242)], [44, 35, 25],
              -0.24 + math.sin(t * 2.7 + 3.4) * 0.05 - aggro * 0.16,
-             shade(near, 1.05), 0.9, 1.0),
+             self.FUR_NEAR, self.Z_NECK_NEAR, 0.9, 1.0),
         ]
-        for joints, widths, hang, tone, jk, det in heads:
-            npts = T(tapered(joints, widths))
-            sculpt(L, npts, tone, rim=rim if det > 0.8 else rim_far,
-                   under=shade(BEAST_WARM, 0.95 if det > 0.8 else 0.5),
-                   rim_off=(3, -4), under_off=(-3, 4))
-            # criniere : lobes arrondis superposes plutot que des pics
-            # (des triangles reguliers donnent une lame de scie)
+        for joints, widths, hang, col, zn, jk, det in heads:
+            self._both(T(tapered(joints, widths)), col, zn)
             mane = random.Random(int(joints[0][1]))
             for i in range(9):
                 u = (i + 0.35) / 9
                 k = u * (len(joints) - 1)
                 i0 = min(len(joints) - 2, int(k))
-                mx = lerp(joints[i0][0], joints[i0 + 1][0], k - i0)
-                my = lerp(joints[i0][1], joints[i0 + 1][1], k - i0)
+                mx2 = lerp(joints[i0][0], joints[i0 + 1][0], k - i0)
+                my2 = lerp(joints[i0][1], joints[i0 + 1][1], k - i0)
                 sp = (16 + 11 * aggro) * (1.05 - abs(u - 0.4)) * mane.uniform(0.6, 1.4)
                 wd = mane.uniform(13, 22)
                 tip = mane.uniform(-9, 7)
-                lobe = smooth([(mx - wd, my + 11), (mx - wd * 0.5, my - sp * 0.55),
-                               (mx + tip, my - sp), (mx + wd * 0.8, my - sp * 0.4),
-                               (mx + wd, my + 9)], 3)
-                poly(L, T(lobe), shade(tone, mane.uniform(0.52, 0.78)))
-            hx2, hy2 = OX + joints[-1][0], OY + joints[-1][1]
-            self.head(L, hx2, hy2, hang, hs, jaws * jk, tone,
-                      rim if det > 0.8 else rim_far, eye=det, detail=det)
+                lobe = smooth([(mx2 - wd, my2 + 11), (mx2 - wd * 0.5, my2 - sp * 0.55),
+                               (mx2 + tip, my2 - sp), (mx2 + wd * 0.8, my2 - sp * 0.4),
+                               (mx2 + wd, my2 + 9)], 3)
+                self._both(T(lobe), shade(col, mane.uniform(0.74, 0.96)),
+                           zn + (14 if i % 2 else 2))
+            self.head(OX + joints[-1][0], OY + joints[-1][1], hang, hs,
+                      jaws * jk, col, zn, eye=det, detail=det)
 
-        # ---- souffle brulant ----
-        for joints, widths, hang, tone, jk, det in heads:
+        # ======================================= ECLAIRAGE PAR PIXEL
+        gol_shade.shade(L, F, ambient=0.15, relief=10.0,
+                        rim_power=2.6, rim_gain=1.25, fur=0.34,
+                        ao=0.70, counter=0.42)
+
+        # ============================ EMISSIFS : ils eclairent, pas l'inverse
+        for item in self._emit:
+            if item[0] == "glow":
+                _, gx4, gy4, r, c, a = item
+                glow(L, gx4, gy4, r, c, a)
+            elif item[0] == "vein":
+                _, pts, pulse = item
+                # sourdes : la braise couve SOUS le poil
+                pygame.draw.lines(L, mix((26, 20, 20), FIRE_LOW, 0.55 * pulse),
+                                  False, pts, 4)
+                pygame.draw.lines(L, mix(FIRE_LOW, FIRE_MID, 0.30 * pulse),
+                                  False, pts, 1)
+                for px4, py4 in pts[::8]:
+                    glow(L, px4, py4, 13, FIRE_LOW, int(45 * pulse))
+            elif item[0] == "eye":
+                _, ex, ey, ang, hsc, k, almond, slit = item
+                er = max(2.0, 5.5 * hsc)
+                glow(L, ex, ey, er * 6 * k, EYE_HOT, int(210 * k))
+                poly(L, almond, EYE_HOT)
+                poly(L, slit, (22, 6, 8))
+                pygame.draw.circle(L, EYE_CORE,
+                                   (int(ex - er * 0.5), int(ey - er * 0.5)),
+                                   max(1, int(er * 0.28)))
+
+        # souffle brulant devant les gueules ouvertes
+        for joints, widths, hang, col, zn, jk, det in heads:
             if jaws * jk < 0.35:
                 continue
             hx2, hy2 = OX + joints[-1][0], OY + joints[-1][1]
@@ -1429,21 +1381,11 @@ class Cerberus:
                           18 + k * 34, 13 + k * 26, FIRE_LOW,
                           int(70 * (1 - k) * jaws * jk))
 
-        # ---- passe d'eclairage globale, DECOUPEE sur la silhouette ----
-        # C'est elle qui donne le contraste de valeurs : le haut du dos part
-        # dans l'ombre, le poitrail et les pattes avant recoivent les braseros.
-        # Sans decoupe, ces taches deborderaient en halos flottants autour du
-        # personnage ; on les masque donc par l'alpha du calque.
-        for bx, by, rx, ry, k in ((40, -252, 240, 96, 0.55), (210, -176, 130, 124, 0.4),
-                                  (-60, -300, 150, 80, 0.3)):
-            soft_shade(L, OX + bx, OY + by, rx, ry, k)
-        for bx, by, r, a in ((-150, -110, 130, 62), (-196, -246, 96, 42)):
-            glow(L, OX + bx, OY + by, r, BEAST_WARM, a)
-
         self._spr, self._m = compose_sprite(L, s, width=max(3, int(5 * s)),
                                             color=INK, ring=4)
 
 
+CLAW = (214, 204, 184)
 CLAW = (214, 204, 184)
 
 
